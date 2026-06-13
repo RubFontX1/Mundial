@@ -18,7 +18,7 @@ ejecutarse a mano:  `python worldcup_api.py [--force]`.
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -33,6 +33,29 @@ TIMEOUT = 30
 STAGE_ORDER = {
     "group": 0, "r32": 1, "r16": 2, "qf": 3, "sf": 4, "third": 5, "final": 6,
 }
+
+# La API entrega la hora LOCAL de cada sede sin zona horaria. Mapa
+# stadium_id -> offset UTC (en horas) válido para jun/jul 2026.
+# EE.UU. y Canadá están en horario de verano (DST); México no usa DST.
+STADIUM_UTC_OFFSET = {
+    "1": -6,   # Ciudad de México (Estadio Azteca)
+    "2": -6,   # Guadalajara
+    "3": -6,   # Monterrey
+    "4": -5,   # Dallas (Central, DST)
+    "5": -5,   # Houston (Central)
+    "6": -5,   # Kansas City (Central)
+    "7": -4,   # Atlanta (Eastern, DST)
+    "8": -4,   # Miami (Eastern)
+    "9": -4,   # Boston/Foxborough (Eastern)
+    "10": -4,  # Filadelfia (Eastern)
+    "11": -4,  # Nueva York/Nueva Jersey (Eastern)
+    "12": -4,  # Toronto (Eastern)
+    "13": -7,  # Vancouver (Pacific, DST)
+    "14": -7,  # Seattle (Pacific)
+    "15": -7,  # San Francisco Bay Area (Pacific)
+    "16": -7,  # Los Ángeles (Pacific)
+}
+DEFAULT_UTC_OFFSET = -5  # por si apareciera una sede no mapeada
 
 
 # ---------- Acceso HTTP ----------
@@ -98,15 +121,19 @@ def translate_label(label: str | None) -> str | None:
     return label
 
 
-def parse_date(local_date: str | None) -> str:
-    """'06/11/2026 13:00' (MM/DD/YYYY HH:MM) -> '2026-06-11 13:00:00'."""
+def parse_date(local_date: str | None, offset_hours: int = 0) -> str:
+    """Convierte la hora LOCAL de la sede a un timestamp UTC ISO-8601.
+    '06/11/2026 13:00' (hora de la sede) + offset -6  ->  '2026-06-11T19:00:00Z'.
+    El frontend lo muestra después en la hora local de cada usuario."""
     if not local_date:
         return ""
     try:
         dt = datetime.strptime(local_date.strip(), "%m/%d/%Y %H:%M")
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
         return ""
+    # UTC = hora_local - offset (offset es negativo en América, así que suma).
+    utc = dt - timedelta(hours=offset_hours)
+    return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _int(val):
@@ -158,7 +185,7 @@ def _existing_index(cur) -> dict:
 def _pending_sync(cur) -> bool:
     """True si vale la pena consultar la API: hay un partido ya empezado sin
     resultado final. Evita golpear la API cuando no hay nada que actualizar."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = cur.execute(
         "SELECT home_team, away_team FROM matches "
         "WHERE status != 'FT' AND date != '' AND date <= ? ORDER BY date LIMIT 1",
@@ -219,8 +246,9 @@ def sync_all(force: bool = False):
         home, home_flag = _resolve_team(g, "home", team_idx)
         away, away_flag = _resolve_team(g, "away", team_idx)
         status, hg, ag = _status_and_scores(g)
-        date = parse_date(g.get("local_date"))
-        stad = stad_idx.get(g.get("stadium_id"), {})
+        sid = g.get("stadium_id")
+        date = parse_date(g.get("local_date"), STADIUM_UTC_OFFSET.get(sid, DEFAULT_UTC_OFFSET))
+        stad = stad_idx.get(sid, {})
 
         # Preservar el id de partidos de grupo ya sembrados (M01..M72).
         key, rkey = (norm(home), norm(away)), (norm(away), norm(home))

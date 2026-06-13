@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sqlite3
 import hashlib
 import uvicorn
@@ -174,16 +174,28 @@ def recalculate_scores():
 
 
 def is_locked(match_date: str) -> bool:
-    """True si el partido ya cerró (inicio menos LOCK_MINUTES)."""
+    """True si el partido ya cerró (inicio menos LOCK_MINUTES).
+    Las fechas se guardan en UTC ISO ('2026-06-11T19:00:00Z'); la comparación
+    se hace siempre en UTC para que el bloqueo sea correcto en cualquier servidor."""
     if not match_date:
         return False
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            start = datetime.strptime(match_date[:19], fmt)
-            return datetime.now() >= start - timedelta(minutes=LOCK_MINUTES)
-        except ValueError:
-            continue
-    return False
+    start = None
+    iso = match_date.replace("Z", "+00:00")
+    try:
+        start = datetime.fromisoformat(iso)
+    except ValueError:
+        # Respaldo: formatos antiguos sin zona (se asumen UTC).
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                start = datetime.strptime(match_date[:19], fmt)
+                break
+            except ValueError:
+                continue
+    if start is None:
+        return False
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) >= start - timedelta(minutes=LOCK_MINUTES)
 
 
 # ---------- Endpoints: jugadores / auth ----------

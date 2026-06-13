@@ -28,6 +28,15 @@ const STAGES = [
 
 function fmtDate(s) {
     if (!s) return '';
+    // Las fechas llegan en UTC ISO ('2026-06-11T19:00:00Z'); Date las convierte
+    // automáticamente a la hora local del navegador de cada usuario.
+    const d = new Date(s);
+    if (!isNaN(d.getTime()) && /[TZ]/.test(s)) {
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${hh}:${mm}`;
+    }
+    // Respaldo para formatos antiguos sin zona.
     const m = s.match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
     if (!m) return s.slice(0, 16);
     return `${parseInt(m[3])} ${MONTHS[parseInt(m[2]) - 1]} · ${m[4]}:${m[5]}`;
@@ -275,7 +284,7 @@ function renderPronosticos() {
         <div class="section-head">
             <div>
                 <div class="section-title">Mis jugadas</div>
-                <div class="section-sub">Se guardan solas al cargar ambos goles · cierran 1 min antes</div>
+                <div class="section-sub">Se guardan solas al cargar ambos goles · cierran 1 min antes · horarios en tu hora local</div>
             </div>
             <span class="pill">${state.matches.length} partidos</span>
         </div>
