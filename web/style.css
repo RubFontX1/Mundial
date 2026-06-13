@@ -645,3 +645,109 @@ tr.qualifies { background: linear-gradient(90deg, rgba(22,163,74,0.07), transpar
     .seg { display: flex; width: 100%; }
     .seg-btn { flex: 1; }
 }
+
+/* ---------- Barra de créditos en el header ---------- */
+.credits-bar {
+    position: relative; z-index: 1;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.4rem 1rem;
+    max-width: 1100px; margin: 0.6rem auto 0; padding: 0.55rem 1.5rem 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+.credits-powered { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.cp-label {
+    font-size: 0.6rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.45);
+}
+.cp-tech {
+    font-size: 0.72rem; font-weight: 800; letter-spacing: 0.01em;
+    color: #fff;
+    background: linear-gradient(180deg, rgba(245,180,0,0.22), rgba(245,180,0,0.08));
+    border: 1px solid rgba(245, 180, 0, 0.35);
+    padding: 2px 9px; border-radius: 20px;
+}
+.credits-powered i { color: rgba(255, 255, 255, 0.3); font-style: normal; }
+.credits-sign {
+    font-size: 0.74rem; font-weight: 600; color: rgba(255, 255, 255, 0.7);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+}
+.credits-sign b { color: var(--gold); font-weight: 800; }
+@media (max-width: 540px) {
+    .credits-bar { padding: 0.5rem 1.2rem 0; }
+    .cp-label { display: none; }
+    .credits-sign { font-size: 0.68rem; }
+}
+
+/* ---------- Panel del premio: El Asado (brasas) ---------- */
+.asado-card {
+    position: relative; overflow: hidden;
+    border-radius: 24px;
+    margin-bottom: 1.6rem;
+    padding: 1.4rem 1.5rem 1.6rem;
+    color: #fff8ee;
+    background:
+        radial-gradient(120% 90% at 85% -10%, rgba(245, 180, 0, 0.35), transparent 55%),
+        radial-gradient(100% 120% at 0% 120%, rgba(255, 90, 20, 0.4), transparent 55%),
+        linear-gradient(150deg, #3a1606 0%, #1c0a03 60%, #2a1004 100%);
+    border: 1px solid rgba(245, 180, 0, 0.28);
+    box-shadow: 0 24px 50px -22px rgba(120, 40, 0, 0.7);
+    animation: rise 0.6s both;
+}
+.asado-embers {
+    position: absolute; inset: 0; pointer-events: none; opacity: 0.7;
+    background:
+        radial-gradient(2px 2px at 20% 80%, rgba(255, 170, 60, 0.9), transparent),
+        radial-gradient(2px 2px at 45% 70%, rgba(255, 120, 40, 0.8), transparent),
+        radial-gradient(1.5px 1.5px at 70% 85%, rgba(255, 200, 90, 0.9), transparent),
+        radial-gradient(2px 2px at 88% 65%, rgba(255, 140, 50, 0.7), transparent);
+    filter: blur(0.3px);
+    animation: emberFlicker 3.5s ease-in-out infinite alternate;
+}
+@keyframes emberFlicker {
+    0% { opacity: 0.45; transform: translateY(0); }
+    100% { opacity: 0.85; transform: translateY(-3px); }
+}
+.asado-head { position: relative; display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.9rem; }
+.asado-ico { font-size: 1.7rem; filter: drop-shadow(0 3px 8px rgba(255, 120, 30, 0.6)); }
+.asado-kicker {
+    font-size: 0.64rem; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase;
+    color: rgba(245, 200, 120, 0.85);
+}
+.asado-title {
+    font-family: 'Anton', sans-serif; text-transform: uppercase; letter-spacing: 0.02em;
+    font-size: 1.5rem; line-height: 1; color: #fff;
+}
+.asado-amount {
+    position: relative;
+    font-family: 'Anton', sans-serif; font-size: 2.8rem; line-height: 1; letter-spacing: 0.01em;
+    background: linear-gradient(180deg, #ffe9a8, #f5b400 55%, #ff7a1a);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 6px 20px rgba(255, 130, 30, 0.35);
+}
+.asado-amount.soft { font-size: 1.5rem; opacity: 0.8; -webkit-text-fill-color: #ffd8a0; }
+.asado-line { position: relative; font-size: 0.84rem; color: rgba(255, 245, 230, 0.82); margin-top: 0.5rem; max-width: 38ch; }
+.asado-line b { color: var(--gold); font-weight: 800; }
+.asado-you {
+    position: relative; display: inline-block; margin-top: 0.9rem;
+    font-size: 0.86rem; font-weight: 700; color: #fff;
+    background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.18);
+    padding: 8px 14px; border-radius: 30px;
+}
+.asado-you b { color: #ffd36b; }
+.asado-you.win {
+    background: linear-gradient(135deg, rgba(245,180,0,0.95), rgba(255,120,30,0.9));
+    border-color: transparent; color: #2a1004;
+}
+.asado-you.win b { color: #2a1004; }
+
+/* Monto por jugador en el ranking */
+.lb-end { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.lb-pay {
+    font-size: 0.66rem; font-weight: 800; letter-spacing: 0.01em;
+    color: #b4471a; white-space: nowrap;
+}
+.lb-pay.free { color: var(--green-600); }
+
+/* Admin: configurar el asado */
+.asado-admin-row { display: flex; gap: 0.8rem; align-items: flex-end; }
+.asado-admin-row > div:first-child { width: 90px; }
