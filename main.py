@@ -64,6 +64,13 @@ def init_db():
             FOREIGN KEY (match_id) REFERENCES matches (id)
         )
     ''')
+    # Ajustes del juego (clave/valor): monto del asado, moneda, etc.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     # Mini-migraciones idempotentes (Postgres soporta IF NOT EXISTS).
     for table, column, coltype in (
         ("players", "pin", "TEXT"),
@@ -103,6 +110,36 @@ class ResultUpdate(BaseModel):
     home_goals: int
     away_goals: int
     admin_key: str
+
+
+class SettingsUpdate(BaseModel):
+    admin_key: str
+    asado_total: float
+    currency: str | None = "$"
+
+
+# ---------- Ajustes / premio (el asado) ----------
+def get_setting(cursor, key: str, default=None):
+    r = cursor.execute("SELECT value FROM settings WHERE key = %s", (key,)).fetchone()
+    return r["value"] if r else default
+
+
+def set_setting(cursor, key: str, value):
+    cursor.execute(
+        "INSERT INTO settings (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, str(value)),
+    )
+
+
+def asado_config(cursor):
+    """Devuelve (monto_total, moneda) del asado configurado por el admin."""
+    try:
+        total = float(get_setting(cursor, "asado_total", "0") or 0)
+    except (TypeError, ValueError):
+        total = 0.0
+    currency = get_setting(cursor, "asado_currency", "$") or "$"
+    return total, currency
 
 
 # ---------- Lógica de puntaje ----------
@@ -230,14 +267,49 @@ def login(req: LoginRequest):
 @app.get("/api/players")
 def get_players():
     conn = get_conn()
-    players = conn.execute(
+    cursor = conn.cursor()
+    rows = cursor.execute(
         "SELECT p.id, p.name, p.points, p.exact_hits, p.partial_hits, "
         "  (SELECT COUNT(*) FROM predictions pr WHERE pr.player_id = p.id) AS pred_count "
         "FROM players p "
         "ORDER BY p.points DESC, p.exact_hits DESC, p.name ASC"
     ).fetchall()
+    total, _currency = asado_config(cursor)
     conn.close()
-    return [dict(p) for p in players]
+
+    players = [dict(p) for p in rows]
+    # Reparto del asado: el 1º no paga; el resto divide el total en partes iguales.
+    n = len(players)
+    share = (total / (n - 1)) if (n > 1 and total > 0) else 0.0
+    for i, p in enumerate(players):
+        p["is_winner"] = (i == 0 and n > 1 and total > 0)
+        p["pays"] = 0.0 if p["is_winner"] else round(share, 2)
+    return players
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Configuración pública del premio (monto del asado y moneda)."""
+    conn = get_conn()
+    cursor = conn.cursor()
+    total, currency = asado_config(cursor)
+    conn.close()
+    return {"asado_total": total, "currency": currency}
+
+
+@app.post("/api/settings")
+def update_settings(body: SettingsUpdate):
+    if body.admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
+    if body.asado_total < 0:
+        raise HTTPException(status_code=400, detail="El monto no puede ser negativo")
+    conn = get_conn()
+    cursor = conn.cursor()
+    set_setting(cursor, "asado_total", body.asado_total)
+    set_setting(cursor, "asado_currency", (body.currency or "$").strip()[:4])
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
 
 
 @app.post("/api/players/{player_id}/delete")

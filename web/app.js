@@ -10,8 +10,16 @@ let state = {
     bracketTab: 'grupos',   // sub-vista de "El Mundial": 'grupos' | 'llaves'
     fixtureStage: 'group',  // fase mostrada en "Mis jugadas"
     detailId: null,         // jugador abierto desde el ranking
-    boards: {}              // cache de pronósticos por jugador (solo partidos cerrados)
+    boards: {},             // cache de pronósticos por jugador (solo partidos cerrados)
+    settings: { asado_total: 0, currency: '$' }  // premio (el asado)
 };
+
+// Formatea dinero: separador de miles, sin decimales si es entero.
+function money(n) {
+    const v = Number(n) || 0;
+    const s = Number.isInteger(v) ? v.toLocaleString('es-CL') : v.toLocaleString('es-CL', { minimumFractionDigits: 2 });
+    return `${state.settings.currency || '$'}${s}`;
+}
 
 const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
@@ -44,12 +52,14 @@ function fmtDate(s) {
 
 async function init() {
     try {
-        const [resPlayers, resMatches] = await Promise.all([
+        const [resPlayers, resMatches, resSettings] = await Promise.all([
             fetch('/api/players'),
-            fetch('/api/matches')
+            fetch('/api/matches'),
+            fetch('/api/settings')
         ]);
         state.players = await resPlayers.json();
         state.matches = await resMatches.json();
+        state.settings = await resSettings.json();
     } catch (e) {
         renderSession();
         document.getElementById('content').innerHTML = `
@@ -138,25 +148,34 @@ function renderRanking() {
     if (state.detailId) return renderPlayerDetail(state.detailId);
 
     const content = document.getElementById('content');
+    const hasPrize = (state.settings.asado_total || 0) > 0;
     const rows = state.players.length === 0
         ? '<div class="card empty-state"><div class="emoji">🥅</div><h2>Sin jugadores</h2><p>¡Sé el primero en anotarte y abrir la tabla!</p></div>'
         : `<div class="leaderboard">${state.players.map((p, i) => {
             const me = state.currentPlayer?.id == p.id;
             const top = i < 3 ? `top${i + 1}` : '';
+            const cost = !hasPrize ? ''
+                : p.is_winner
+                    ? '<div class="lb-pay free">come gratis 🔥</div>'
+                    : `<div class="lb-pay">paga ${money(p.pays)}</div>`;
             return `
             <div class="lb-row ${top} ${me ? 'is-me' : ''}" style="animation-delay:${i * 0.04}s"
                  role="button" tabindex="0" onclick="openPlayer(${p.id})" title="Ver pronósticos de ${p.name}">
                 <div class="lb-pos">${i + 1}</div>
-                <div>
+                <div class="lb-id">
                     <div class="lb-name">${p.name}${me ? ' <span class="badge open">tú</span>' : ''}</div>
                     <div class="lb-detail">${p.exact_hits} exactos · ${p.partial_hits} parciales</div>
                 </div>
-                <div class="lb-pts">${p.points}<small>PTS</small></div>
+                <div class="lb-end">
+                    <div class="lb-pts">${p.points}<small>PTS</small></div>
+                    ${cost}
+                </div>
                 <div class="lb-go" aria-hidden="true">›</div>
             </div>`;
         }).join('')}</div>`;
 
     content.innerHTML = `
+        ${renderAsadoPanel()}
         <div class="section-head">
             <div>
                 <div class="section-title">Tabla de posiciones</div>
@@ -165,6 +184,36 @@ function renderRanking() {
             <span class="pill">${state.players.length} jugadores</span>
         </div>
         ${rows}`;
+}
+
+// Panel del premio: un asado que pagan todos menos el líder.
+function renderAsadoPanel() {
+    const total = state.settings.asado_total || 0;
+    const me = state.currentPlayer && state.players.find(p => p.id == state.currentPlayer.id);
+    let mine = '';
+    if (total > 0 && me) {
+        mine = me.is_winner
+            ? `<div class="asado-you win">Vas 1º · <b>comés gratis</b> 🏆🔥</div>`
+            : `<div class="asado-you">Si terminara hoy, pagás <b>${money(me.pays)}</b></div>`;
+    }
+    const body = total > 0
+        ? `<div class="asado-amount">${money(total)}</div>
+           <p class="asado-line">El <b>1º</b> no pone un peso. Los demás dividen el asado en partes iguales.</p>
+           ${mine}`
+        : `<div class="asado-amount soft">Sin monto aún</div>
+           <p class="asado-line">El admin define cuánto sale el asado. <b>El que gana, come gratis.</b></p>`;
+    return `
+        <section class="asado-card">
+            <div class="asado-embers" aria-hidden="true"></div>
+            <div class="asado-head">
+                <span class="asado-ico">🔥🥩</span>
+                <div>
+                    <div class="asado-kicker">El premio en juego</div>
+                    <h2 class="asado-title">El Asado</h2>
+                </div>
+            </div>
+            ${body}
+        </section>`;
 }
 
 // ---------- Detalle de jugador (pronósticos + comparación) ----------
@@ -669,8 +718,44 @@ function renderAdmin() {
             <div class="adm-players">${playerRows}</div>
         </div>
 
+        <div class="card asado-admin" style="margin-bottom:1.5rem;">
+            <h3 style="font-family:'Anton',sans-serif; font-size:1.1rem; text-transform:uppercase; color:var(--green-900); margin-bottom:0.3rem;">🔥 El premio (asado)</h3>
+            <p class="section-sub" style="margin-bottom:1rem;">Monto total del asado. El 1º no paga; el resto lo divide.</p>
+            <div class="asado-admin-row">
+                <div>
+                    <label class="field-label">Moneda</label>
+                    <input id="asado-currency" class="field" type="text" maxlength="4" value="${state.settings.currency || '$'}" style="text-align:center;">
+                </div>
+                <div style="flex:1;">
+                    <label class="field-label">Monto total</label>
+                    <input id="asado-total" class="field" type="number" min="0" step="1000" placeholder="30000" value="${state.settings.asado_total || ''}">
+                </div>
+            </div>
+            <button onclick="saveAsado()" class="btn-primary" style="margin-top:0.8rem;">Guardar premio</button>
+        </div>
+
         <h3 style="font-family:'Anton',sans-serif; font-size:1.1rem; text-transform:uppercase; color:var(--green-900); margin-bottom:1rem;">Cargar resultados</h3>
         ${cards}`;
+}
+
+async function saveAsado() {
+    const total = parseFloat(document.getElementById('asado-total').value) || 0;
+    const currency = document.getElementById('asado-currency').value.trim() || '$';
+    try {
+        const res = await fetch('/api/settings', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ admin_key: state.adminKey, asado_total: total, currency })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            state.settings = { asado_total: total, currency };
+            await refreshPlayers();
+            toast('Premio actualizado 🔥');
+        } else {
+            if (res.status === 403) exitAdmin();
+            toast(data.detail || 'No se pudo guardar', false);
+        }
+    } catch (e) { toast('Error de conexión', false); }
 }
 
 async function deletePlayer(id, name) {
@@ -712,7 +797,12 @@ async function cleanupInactive() {
 }
 
 async function refreshPlayers() {
-    state.players = await (await fetch('/api/players')).json();
+    const [pl, st] = await Promise.all([
+        fetch('/api/players').then(r => r.json()),
+        fetch('/api/settings').then(r => r.json()).catch(() => state.settings)
+    ]);
+    state.players = pl;
+    state.settings = st;
     state.boards = {}; // invalidar cache de boletas para comparación
 }
 
