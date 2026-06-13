@@ -1,0 +1,20 @@
+# Datos y secretos (NUNCA subir)
+prode.db
+prode.db.*
+db_volume/
+*.env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / herramientas locales
+.vscode/
+.claude/
+.playwright-cli/
+
+# Sistema operativo
+Thumbs.db
+.DS_Store

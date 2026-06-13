@@ -1,0 +1,16 @@
+# .gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+prode.db
+.vscode/
+
+# .dockerignore
+__pycache__/
+*.pyc
+Dockerfile
+docker-compose.yml
+.git
+.gitignore
+DOC-20260611-WA0002..xlsx

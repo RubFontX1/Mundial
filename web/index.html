@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mundial 2026 · Pronósticos</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=4">
+</head>
+<body>
+    <div class="pitch-lines" aria-hidden="true"></div>
+
+    <header class="site-header">
+        <div class="header-inner">
+            <div class="brand">
+                <svg class="crest" viewBox="0 0 60 68" aria-hidden="true">
+                    <defs>
+                        <linearGradient id="sh" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0" stop-color="#0f7a42"/>
+                            <stop offset="1" stop-color="#04341f"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M30 2 56 11V35C56 51 44 62 30 66 16 62 4 51 4 35V11L30 2Z" fill="url(#sh)" stroke="#f5b400" stroke-width="2.6"/>
+                    <circle cx="30" cy="32" r="13" fill="#fff"/>
+                    <g stroke="#0a5132" stroke-width="1.6" stroke-linecap="round">
+                        <line x1="30" y1="27" x2="30" y2="20"/>
+                        <line x1="34.8" y1="30.5" x2="41.4" y2="28.3"/>
+                        <line x1="32.9" y1="36" x2="37" y2="41.7"/>
+                        <line x1="27.1" y1="36" x2="23" y2="41.7"/>
+                        <line x1="25.2" y1="30.5" x2="18.6" y2="28.3"/>
+                    </g>
+                    <path d="M30 27 34.8 30.5 32.9 36 27.1 36 25.2 30.5Z" fill="#0a5132"/>
+                </svg>
+                <div class="brand-text">
+                    <span class="brand-kicker">La quiniela del</span>
+                    <h1 class="brand-title">Mundial <span>2026</span></h1>
+                    <span class="brand-sub">Pronósticos entre amigos</span>
+                </div>
+            </div>
+            <div id="session-slot" class="session-slot"><!-- render dinámico --></div>
+        </div>
+    </header>
+
+    <main id="content"><!-- render dinámico --></main>
+
+    <nav class="tab-bar">
+        <button class="tab-btn active" data-view="llaves" onclick="switchView('llaves')">
+            <span class="tab-ico">🗺️</span> <span class="tab-label">El Mundial</span>
+        </button>
+        <button class="tab-btn" data-view="ranking" onclick="switchView('ranking')">
+            <span class="tab-ico">🏆</span> <span class="tab-label">Ranking</span>
+        </button>
+        <button class="tab-btn" data-view="pronosticos" onclick="switchView('pronosticos')">
+            <span class="tab-ico">⚽</span> <span class="tab-label">Mis jugadas</span>
+        </button>
+        <button class="tab-btn" data-view="admin" onclick="switchView('admin')">
+            <span class="tab-ico">⚙️</span> <span class="tab-label">Admin</span>
+        </button>
+    </nav>
+
+    <script src="app.js?v=4"></script>
+</body>
+</html>
