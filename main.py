@@ -3,15 +3,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
-import sqlite3
 import hashlib
 import uvicorn
 import os
 
+import psycopg
+from db import get_conn
+
 # Configuración
-# Ruta de la base de datos. En la nube apúntala a un disco persistente con la
-# variable de entorno DB_PATH (ej. /data/prode.db) para no perder los datos.
-DB_PATH = os.environ.get("DB_PATH", "prode.db")
 # Clave de administrador para cargar resultados oficiales a mano.
 # Cámbiala con la variable de entorno ADMIN_KEY antes de desplegar.
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "mundial2026")
@@ -23,18 +22,12 @@ def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             pin TEXT,
             points INTEGER DEFAULT 0,
@@ -71,7 +64,7 @@ def init_db():
             FOREIGN KEY (match_id) REFERENCES matches (id)
         )
     ''')
-    # Mini-migraciones: agregar columnas si la BD viene de una versión anterior.
+    # Mini-migraciones idempotentes (Postgres soporta IF NOT EXISTS).
     for table, column, coltype in (
         ("players", "pin", "TEXT"),
         ("matches", "stage", "TEXT"),
@@ -79,10 +72,7 @@ def init_db():
         ("matches", "city", "TEXT"),
         ("matches", "matchday", "TEXT"),
     ):
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
-        except sqlite3.OperationalError:
-            pass  # la columna ya existe
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}")
     conn.commit()
     conn.close()
 
@@ -166,7 +156,7 @@ def recalculate_scores():
 
     for pid, s in stats.items():
         cursor.execute(
-            "UPDATE players SET points = ?, exact_hits = ?, partial_hits = ? WHERE id = ?",
+            "UPDATE players SET points = %s, exact_hits = %s, partial_hits = %s WHERE id = %s",
             (s["points"], s["exact"], s["partial"], pid),
         )
     conn.commit()
@@ -211,11 +201,14 @@ def create_player(player: PlayerCreate):
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO players (name, pin) VALUES (?, ?)", (name, hash_pin(pin))
+            "INSERT INTO players (name, pin) VALUES (%s, %s) RETURNING id",
+            (name, hash_pin(pin)),
         )
+        new_id = cursor.fetchone()["id"]
         conn.commit()
-        return {"id": cursor.lastrowid, "name": name}
-    except sqlite3.IntegrityError:
+        return {"id": new_id, "name": name}
+    except psycopg.errors.UniqueViolation:
+        conn.rollback()
         raise HTTPException(status_code=400, detail="Ese nombre ya está registrado")
     finally:
         conn.close()
@@ -226,7 +219,7 @@ def login(req: LoginRequest):
     conn = get_conn()
     cursor = conn.cursor()
     p = cursor.execute(
-        "SELECT * FROM players WHERE name = ?", (req.name.strip(),)
+        "SELECT * FROM players WHERE name = %s", (req.name.strip(),)
     ).fetchone()
     conn.close()
     if not p or p["pin"] != hash_pin(req.pin.strip()):
@@ -253,8 +246,8 @@ def delete_player(player_id: int, body: dict):
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM predictions WHERE player_id = ?", (player_id,))
-    cursor.execute("DELETE FROM players WHERE id = ?", (player_id,))
+    cursor.execute("DELETE FROM predictions WHERE player_id = %s", (player_id,))
+    cursor.execute("DELETE FROM players WHERE id = %s", (player_id,))
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -289,7 +282,7 @@ def player_board(player_id: int):
     rows = conn.execute(
         "SELECT pr.match_id, pr.home_score, pr.away_score, m.date "
         "FROM predictions pr JOIN matches m ON m.id = pr.match_id "
-        "WHERE pr.player_id = ?", (player_id,)
+        "WHERE pr.player_id = %s", (player_id,)
     ).fetchall()
     conn.close()
     return [
@@ -301,7 +294,7 @@ def player_board(player_id: int):
 # ---------- Endpoints: pronósticos ----------
 def verify_pin(cursor, player_id: int, pin: str):
     p = cursor.execute(
-        "SELECT pin FROM players WHERE id = ?", (player_id,)
+        "SELECT pin FROM players WHERE id = %s", (player_id,)
     ).fetchone()
     if not p or p["pin"] != hash_pin(pin.strip()):
         raise HTTPException(status_code=403, detail="PIN incorrecto")
@@ -314,7 +307,7 @@ def save_prediction(pred: PredictionUpdate):
     try:
         verify_pin(cursor, pred.player_id, pred.pin)
         match = cursor.execute(
-            "SELECT date FROM matches WHERE id = ?", (pred.match_id,)
+            "SELECT date FROM matches WHERE id = %s", (pred.match_id,)
         ).fetchone()
         if not match:
             raise HTTPException(status_code=404, detail="Partido no encontrado")
@@ -324,7 +317,7 @@ def save_prediction(pred: PredictionUpdate):
             )
         cursor.execute(
             '''INSERT INTO predictions (player_id, match_id, home_score, away_score)
-               VALUES (?, ?, ?, ?)
+               VALUES (%s, %s, %s, %s)
                ON CONFLICT(player_id, match_id) DO UPDATE SET
                home_score = excluded.home_score,
                away_score = excluded.away_score''',
@@ -340,7 +333,7 @@ def save_prediction(pred: PredictionUpdate):
 def get_player_predictions(player_id: int):
     conn = get_conn()
     preds = conn.execute(
-        "SELECT * FROM predictions WHERE player_id = ?", (player_id,)
+        "SELECT * FROM predictions WHERE player_id = %s", (player_id,)
     ).fetchall()
     conn.close()
     return [dict(p) for p in preds]
@@ -401,12 +394,12 @@ def set_result(match_id: str, body: ResultUpdate):
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
     conn = get_conn()
     cursor = conn.cursor()
-    m = cursor.execute("SELECT id FROM matches WHERE id = ?", (match_id,)).fetchone()
+    m = cursor.execute("SELECT id FROM matches WHERE id = %s", (match_id,)).fetchone()
     if not m:
         conn.close()
         raise HTTPException(status_code=404, detail="Partido no encontrado")
     cursor.execute(
-        "UPDATE matches SET home_goals = ?, away_goals = ?, status = 'FT' WHERE id = ?",
+        "UPDATE matches SET home_goals = %s, away_goals = %s, status = 'FT' WHERE id = %s",
         (body.home_goals, body.away_goals, match_id),
     )
     conn.commit()

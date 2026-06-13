@@ -9,9 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar los archivos de requerimientos e instalarlos
-# Creamos el archivo requirements.txt sobre la marcha
-RUN echo "fastapi==0.104.1\nuvicorn==0.24.0.post1\nrequests==2.31.0\npython-multipart==0.0.6" > requirements.txt
+# Instalar dependencias de Python
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el resto de la aplicación

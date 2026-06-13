@@ -4,17 +4,11 @@ services:
     container_name: prode_mundial_2026
     ports:
       - "8000:8000"
-    volumes:
-      - .:/app
-      - prode_data:/app/db_volume
     environment:
       - PYTHONUNBUFFERED=1
-      # La BD vive en el volumen persistente (fuera del bind-mount/OneDrive).
-      - DB_PATH=/app/db_volume/prode.db
-      # Opcionales: defínelas en el host o en un archivo .env
+      # Base de datos PostgreSQL (Supabase). Defínela en el host o en un .env:
+      #   DATABASE_URL=postgresql://postgres.<ref>:<pass>@aws-1-<region>.pooler.supabase.com:6543/postgres
+      - DATABASE_URL=${DATABASE_URL}
       - ADMIN_KEY=${ADMIN_KEY:-mundial2026}
       - AUTO_SYNC=${AUTO_SYNC:-1}
     restart: always
-
-volumes:
-  prode_data:

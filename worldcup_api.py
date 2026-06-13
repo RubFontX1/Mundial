@@ -17,16 +17,15 @@ ejecutarse a mano:  `python worldcup_api.py [--force]`.
 """
 import os
 import re
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import requests
 
 # Reutilizamos el mapeo inglés->español y el normalizador ya existentes.
 from sync_api import TEAM_MAP, norm
+from db import get_conn
 
 BASE = os.environ.get("WC_API_BASE", "https://worldcup26.ir").rstrip("/")
-DB_PATH = os.environ.get("DB_PATH", "prode.db")
 TIMEOUT = 30
 
 # type de la API -> orden de fase (para ordenar/agrupar en el frontend).
@@ -188,7 +187,7 @@ def _pending_sync(cur) -> bool:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = cur.execute(
         "SELECT home_team, away_team FROM matches "
-        "WHERE status != 'FT' AND date != '' AND date <= ? ORDER BY date LIMIT 1",
+        "WHERE status != 'FT' AND date != '' AND date <= %s ORDER BY date LIMIT 1",
         (now,),
     ).fetchone()
     if row:
@@ -210,12 +209,11 @@ def _pending_sync(cur) -> bool:
 def sync_all(force: bool = False):
     """Siembra/actualiza fixture, sedes y resultados de los 104 partidos desde
     worldcup26.ir y recalcula el ranking. Idempotente."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn()
     cur = conn.cursor()
 
     # Si ya hay 104 partidos y nada por actualizar, no gastamos la consulta.
-    seeded = cur.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+    seeded = cur.execute("SELECT COUNT(*) AS n FROM matches").fetchone()["n"]
     if not force and seeded >= 104 and not _pending_sync(cur):
         conn.close()
         return
@@ -267,7 +265,7 @@ def sync_all(force: bool = False):
             """INSERT INTO matches
                  (id, home_team, away_team, home_logo, away_logo, date, group_name,
                   stage, stadium, city, matchday, home_goals, away_goals, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT(id) DO UPDATE SET
                  home_team = excluded.home_team,
                  away_team = excluded.away_team,
