@@ -6,29 +6,32 @@
 #   3) En el dashboard del servicio define ADMIN_KEY (Environment) con tu clave secreta.
 #   4) Deploy. Tu web quedará en https://<nombre>.onrender.com
 #
-# Nota sobre persistencia: el bloque `disk` guarda la base de datos (jugadores y
-# pronósticos) de forma permanente. Los discos requieren un plan de pago
-# ('starter', ~7 USD/mes). En plan 'free' la app funciona pero la BD se reinicia
-# en cada redeploy o cuando el servicio se duerme por inactividad. El fixture y
-# los resultados siempre se re-sincronizan solos desde worldcup26.ir.
+# Plan FREE (sin costo, sin disco persistente): la app funciona, pero los
+# jugadores/pronósticos se reinician en cada redeploy o cuando el servicio se
+# duerme por inactividad. El fixture y los resultados se re-sincronizan solos
+# desde worldcup26.ir.
+#
+# ¿Quieres que NO se pierdan los datos? Sube a plan 'starter' y descomenta el
+# bloque `disk` + la variable DB_PATH=/data/prode.db (ver comentarios abajo).
 services:
   - type: web
     name: prode-mundial-2026
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter          # cámbialo a 'free' si no quieres pagar (sin disco)
+    plan: free
     region: oregon
     healthCheckPath: /api/matches
     envVars:
-      - key: DB_PATH
-        value: /data/prode.db
       - key: AUTO_SYNC
         value: "1"
       - key: WC_API_BASE
         value: https://worldcup26.ir
       - key: ADMIN_KEY
         sync: false        # se define a mano en el dashboard (es secreto)
-    disk:
-      name: prode-data
-      mountPath: /data
-      sizeGB: 1
+    # Para persistencia (requiere plan de pago), descomenta:
+    #   - key: DB_PATH
+    #     value: /data/prode.db
+    # disk:
+    #   name: prode-data
+    #   mountPath: /data
+    #   sizeGB: 1
