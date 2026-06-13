@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import sqlite3
@@ -408,6 +409,12 @@ def force_recalculate(body: dict):
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
     recalculate_scores()
     return {"status": "ok"}
+
+
+# La raíz redirige a la web para que el enlace "pelado" funcione al compartir.
+@app.get("/")
+def root():
+    return RedirectResponse(url="/static/index.html")
 
 
 # Servir archivos estáticos
