@@ -1,0 +1,43 @@
+# Despertador del servicio en Render (plan free se duerme tras 15 min de inactividad).
+#
+# Hace ping a /api/health para mantener la app despierta durante las horas en que
+# se juegan partidos del Mundial 2026. Los kickoffs (sedes en EE.UU./Canadá/México)
+# caen entre ~16:00 y ~04:00 UTC, así que mantenemos viva la app de 14:00 a 06:00
+# UTC y la dejamos dormir de madrugada para no gastar las horas free del plan.
+#
+# Al despertar, el hilo de auto-sync de la app vuelve a consultar worldcup26.ir y
+# actualiza resultados/goles. Fuera de esa ventana, el primer visitante la despierta
+# (con ~30-60 s de cold start).
+name: keep-awake
+
+on:
+  schedule:
+    # Cada 10 minutos dentro de la ventana de partidos (hora UTC).
+    - cron: "*/10 14-23 * * *"
+    - cron: "*/10 0-6 * * *"
+  workflow_dispatch: {}   # permite dispararlo a mano desde la pestaña Actions
+
+concurrency:
+  group: keep-awake
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/health
+        run: |
+          URL="https://prode-mundial-2026-wqsm.onrender.com/api/health"
+          echo "Despertando $URL ..."
+          # Render free puede tardar en arrancar: reintentos con espera.
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /tmp/body.txt -w "%{http_code}" --max-time 60 "$URL" || echo 000)
+            echo "Intento $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "OK:"; cat /tmp/body.txt; exit 0
+            fi
+            sleep 20
+          done
+          echo "No respondió 200 tras varios intentos (puede estar arrancando)."
+          # No fallamos el workflow para no llenar de alertas: el cold start es esperable.
+          exit 0

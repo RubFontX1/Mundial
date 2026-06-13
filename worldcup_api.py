@@ -22,8 +22,8 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 # Reutilizamos el mapeo inglés->español y el normalizador ya existentes.
-from sync_api import TEAM_MAP, norm
-from db import get_conn
+from teams import TEAM_MAP, norm
+from db import db_conn
 
 BASE = os.environ.get("WC_API_BASE", "https://worldcup26.ir").rstrip("/")
 TIMEOUT = 30
@@ -209,85 +209,83 @@ def _pending_sync(cur) -> bool:
 def sync_all(force: bool = False):
     """Siembra/actualiza fixture, sedes y resultados de los 104 partidos desde
     worldcup26.ir y recalcula el ranking. Idempotente."""
-    conn = get_conn()
-    cur = conn.cursor()
+    with db_conn() as conn:
+        cur = conn.cursor()
 
-    # Si ya hay 104 partidos y nada por actualizar, no gastamos la consulta.
-    seeded = cur.execute("SELECT COUNT(*) AS n FROM matches").fetchone()["n"]
-    if not force and seeded >= 104 and not _pending_sync(cur):
-        conn.close()
-        return
+        # Si ya hay 104 partidos y nada por actualizar, no gastamos la consulta.
+        seeded = cur.execute("SELECT COUNT(*) AS n FROM matches").fetchone()["n"]
+        if not force and seeded >= 104 and not _pending_sync(cur):
+            return
 
-    print("[..] Consultando worldcup26.ir (Mundial 2026)...")
-    teams = fetch_teams()
-    stadiums = fetch_stadiums()
-    games = fetch_games()
-    print(f"[OK] {len(teams)} equipos, {len(stadiums)} estadios, {len(games)} partidos.")
+        print("[..] Consultando worldcup26.ir (Mundial 2026)...")
+        teams = fetch_teams()
+        stadiums = fetch_stadiums()
+        games = fetch_games()
+        print(f"[OK] {len(teams)} equipos, {len(stadiums)} estadios, {len(games)} partidos.")
 
-    team_idx = {
-        t["id"]: {"name": en_to_es(t.get("name_en")), "flag": t.get("flag")}
-        for t in teams
-    }
-    stad_idx = {
-        s["id"]: {
-            "name": s.get("name_en") or s.get("fifa_name") or "",
-            "city": s.get("city_en") or "",
-            "country": s.get("country_en") or "",
+        team_idx = {
+            t["id"]: {"name": en_to_es(t.get("name_en")), "flag": t.get("flag")}
+            for t in teams
         }
-        for s in stadiums
-    }
-    existing = _existing_index(cur)
+        stad_idx = {
+            s["id"]: {
+                "name": s.get("name_en") or s.get("fifa_name") or "",
+                "city": s.get("city_en") or "",
+                "country": s.get("country_en") or "",
+            }
+            for s in stadiums
+        }
+        existing = _existing_index(cur)
 
-    upserted = 0
-    for g in games:
-        stage = g.get("type", "group")
-        home, home_flag = _resolve_team(g, "home", team_idx)
-        away, away_flag = _resolve_team(g, "away", team_idx)
-        status, hg, ag = _status_and_scores(g)
-        sid = g.get("stadium_id")
-        date = parse_date(g.get("local_date"), STADIUM_UTC_OFFSET.get(sid, DEFAULT_UTC_OFFSET))
-        stad = stad_idx.get(sid, {})
+        upserted = 0
+        for g in games:
+            stage = g.get("type", "group")
+            home, home_flag = _resolve_team(g, "home", team_idx)
+            away, away_flag = _resolve_team(g, "away", team_idx)
+            status, hg, ag = _status_and_scores(g)
+            sid = g.get("stadium_id")
+            date = parse_date(g.get("local_date"), STADIUM_UTC_OFFSET.get(sid, DEFAULT_UTC_OFFSET))
+            stad = stad_idx.get(sid, {})
 
-        # Preservar el id de partidos de grupo ya sembrados (M01..M72).
-        key, rkey = (norm(home), norm(away)), (norm(away), norm(home))
-        if key in existing:
-            mid = existing[key]
-        elif rkey in existing:
-            # La BD los tiene invertidos: mantener su orientación y dar vuelta el marcador.
-            mid = existing[rkey]
-            home, away = away, home
-            home_flag, away_flag = away_flag, home_flag
-            hg, ag = ag, hg
-        else:
-            mid = str(g["id"])
+            # Preservar el id de partidos de grupo ya sembrados (M01..M72).
+            key, rkey = (norm(home), norm(away)), (norm(away), norm(home))
+            if key in existing:
+                mid = existing[key]
+            elif rkey in existing:
+                # La BD los tiene invertidos: mantener su orientación y dar vuelta el marcador.
+                mid = existing[rkey]
+                home, away = away, home
+                home_flag, away_flag = away_flag, home_flag
+                hg, ag = ag, hg
+            else:
+                mid = str(g["id"])
 
-        cur.execute(
-            """INSERT INTO matches
-                 (id, home_team, away_team, home_logo, away_logo, date, group_name,
-                  stage, stadium, city, matchday, home_goals, away_goals, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT(id) DO UPDATE SET
-                 home_team = excluded.home_team,
-                 away_team = excluded.away_team,
-                 home_logo = excluded.home_logo,
-                 away_logo = excluded.away_logo,
-                 date = excluded.date,
-                 group_name = excluded.group_name,
-                 stage = excluded.stage,
-                 stadium = excluded.stadium,
-                 city = excluded.city,
-                 matchday = excluded.matchday,
-                 home_goals = excluded.home_goals,
-                 away_goals = excluded.away_goals,
-                 status = excluded.status""",
-            (mid, home, away, home_flag, away_flag, date, g.get("group", ""),
-             stage, stad.get("name", ""), stad.get("city", ""), g.get("matchday", ""),
-             hg, ag, status),
-        )
-        upserted += 1
+            cur.execute(
+                """INSERT INTO matches
+                     (id, home_team, away_team, home_logo, away_logo, date, group_name,
+                      stage, stadium, city, matchday, home_goals, away_goals, status)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT(id) DO UPDATE SET
+                     home_team = excluded.home_team,
+                     away_team = excluded.away_team,
+                     home_logo = excluded.home_logo,
+                     away_logo = excluded.away_logo,
+                     date = excluded.date,
+                     group_name = excluded.group_name,
+                     stage = excluded.stage,
+                     stadium = excluded.stadium,
+                     city = excluded.city,
+                     matchday = excluded.matchday,
+                     home_goals = excluded.home_goals,
+                     away_goals = excluded.away_goals,
+                     status = excluded.status""",
+                (mid, home, away, home_flag, away_flag, date, g.get("group", ""),
+                 stage, stad.get("name", ""), stad.get("city", ""), g.get("matchday", ""),
+                 hg, ag, status),
+            )
+            upserted += 1
 
-    conn.commit()
-    conn.close()
+        conn.commit()
 
     from main import recalculate_scores
     recalculate_scores()

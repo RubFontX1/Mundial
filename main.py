@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
@@ -8,7 +10,7 @@ import uvicorn
 import os
 
 import psycopg
-from db import get_conn
+from db import db_conn
 
 # Configuración
 # Clave de administrador para cargar resultados oficiales a mano.
@@ -23,68 +25,79 @@ def hash_pin(pin: str) -> str:
 
 
 def init_db():
-    conn = get_conn()
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS players (
-            id SERIAL PRIMARY KEY,
-            name TEXT UNIQUE NOT NULL,
-            pin TEXT,
-            points INTEGER DEFAULT 0,
-            exact_hits INTEGER DEFAULT 0,
-            partial_hits INTEGER DEFAULT 0
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS matches (
-            id TEXT PRIMARY KEY,
-            home_team TEXT,
-            away_team TEXT,
-            home_logo TEXT,
-            away_logo TEXT,
-            date TEXT,
-            group_name TEXT,
-            stage TEXT,
-            stadium TEXT,
-            city TEXT,
-            matchday TEXT,
-            home_goals INTEGER,
-            away_goals INTEGER,
-            status TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS predictions (
-            player_id INTEGER,
-            match_id TEXT,
-            home_score INTEGER,
-            away_score INTEGER,
-            PRIMARY KEY (player_id, match_id),
-            FOREIGN KEY (player_id) REFERENCES players (id),
-            FOREIGN KEY (match_id) REFERENCES matches (id)
-        )
-    ''')
-    # Ajustes del juego (clave/valor): monto del asado, moneda, etc.
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    # Mini-migraciones idempotentes (Postgres soporta IF NOT EXISTS).
-    for table, column, coltype in (
-        ("players", "pin", "TEXT"),
-        ("matches", "stage", "TEXT"),
-        ("matches", "stadium", "TEXT"),
-        ("matches", "city", "TEXT"),
-        ("matches", "matchday", "TEXT"),
-    ):
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}")
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS players (
+                id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                pin TEXT,
+                points INTEGER DEFAULT 0,
+                exact_hits INTEGER DEFAULT 0,
+                partial_hits INTEGER DEFAULT 0
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS matches (
+                id TEXT PRIMARY KEY,
+                home_team TEXT,
+                away_team TEXT,
+                home_logo TEXT,
+                away_logo TEXT,
+                date TEXT,
+                group_name TEXT,
+                stage TEXT,
+                stadium TEXT,
+                city TEXT,
+                matchday TEXT,
+                home_goals INTEGER,
+                away_goals INTEGER,
+                status TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS predictions (
+                player_id INTEGER,
+                match_id TEXT,
+                home_score INTEGER,
+                away_score INTEGER,
+                PRIMARY KEY (player_id, match_id),
+                FOREIGN KEY (player_id) REFERENCES players (id),
+                FOREIGN KEY (match_id) REFERENCES matches (id)
+            )
+        ''')
+        # Ajustes del juego (clave/valor): monto del asado, moneda, etc.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        # Mini-migraciones idempotentes (Postgres soporta IF NOT EXISTS).
+        for table, column, coltype in (
+            ("players", "pin", "TEXT"),
+            ("matches", "stage", "TEXT"),
+            ("matches", "stadium", "TEXT"),
+            ("matches", "city", "TEXT"),
+            ("matches", "matchday", "TEXT"),
+        ):
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}")
+        conn.commit()
 
 
-app = FastAPI(title="Prode Mundial 2026 API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Arranque/parada de la app. Se ejecuta corra con `python main.py` o con
+    `uvicorn main:app`: así las tablas y la sincronización siempre se inician."""
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[AVISO] No se pudo inicializar la BD al arrancar: {e}")
+    start_auto_sync()
+    yield
+
+
+app = FastAPI(title="Prode Mundial 2026 API", lifespan=lifespan)
 
 
 # ---------- Modelos ----------
@@ -155,49 +168,48 @@ def outcome(h, a):
 def recalculate_scores():
     """Recalcula puntos de todos los jugadores desde cero (idempotente).
     3 pts marcador exacto, 1 pt acierto de resultado, 0 si falla."""
-    conn = get_conn()
-    cursor = conn.cursor()
+    with db_conn() as conn:
+        cursor = conn.cursor()
 
-    # Resultados oficiales disponibles (goles cargados).
-    finished = {
-        m["id"]: (m["home_goals"], m["away_goals"])
-        for m in cursor.execute(
-            "SELECT id, home_goals, away_goals FROM matches "
-            "WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL"
-        ).fetchall()
-    }
+        # Resultados oficiales disponibles (goles cargados).
+        finished = {
+            m["id"]: (m["home_goals"], m["away_goals"])
+            for m in cursor.execute(
+                "SELECT id, home_goals, away_goals FROM matches "
+                "WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL"
+            ).fetchall()
+        }
 
-    # Acumuladores por jugador.
-    stats = {
-        p["id"]: {"points": 0, "exact": 0, "partial": 0}
-        for p in cursor.execute("SELECT id FROM players").fetchall()
-    }
+        # Acumuladores por jugador.
+        stats = {
+            p["id"]: {"points": 0, "exact": 0, "partial": 0}
+            for p in cursor.execute("SELECT id FROM players").fetchall()
+        }
 
-    for pred in cursor.execute(
-        "SELECT player_id, match_id, home_score, away_score FROM predictions"
-    ).fetchall():
-        real = finished.get(pred["match_id"])
-        if real is None or pred["player_id"] not in stats:
-            continue
-        rh, ra = real
-        ph, pa = pred["home_score"], pred["away_score"]
-        if ph is None or pa is None:
-            continue
-        s = stats[pred["player_id"]]
-        if ph == rh and pa == ra:
-            s["points"] += 3
-            s["exact"] += 1
-        elif outcome(ph, pa) == outcome(rh, ra):
-            s["points"] += 1
-            s["partial"] += 1
+        for pred in cursor.execute(
+            "SELECT player_id, match_id, home_score, away_score FROM predictions"
+        ).fetchall():
+            real = finished.get(pred["match_id"])
+            if real is None or pred["player_id"] not in stats:
+                continue
+            rh, ra = real
+            ph, pa = pred["home_score"], pred["away_score"]
+            if ph is None or pa is None:
+                continue
+            s = stats[pred["player_id"]]
+            if ph == rh and pa == ra:
+                s["points"] += 3
+                s["exact"] += 1
+            elif outcome(ph, pa) == outcome(rh, ra):
+                s["points"] += 1
+                s["partial"] += 1
 
-    for pid, s in stats.items():
-        cursor.execute(
-            "UPDATE players SET points = %s, exact_hits = %s, partial_hits = %s WHERE id = %s",
-            (s["points"], s["exact"], s["partial"], pid),
-        )
-    conn.commit()
-    conn.close()
+        for pid, s in stats.items():
+            cursor.execute(
+                "UPDATE players SET points = %s, exact_hits = %s, partial_hits = %s WHERE id = %s",
+                (s["points"], s["exact"], s["partial"], pid),
+            )
+        conn.commit()
 
 
 def is_locked(match_date: str) -> bool:
@@ -225,6 +237,33 @@ def is_locked(match_date: str) -> bool:
     return datetime.now(timezone.utc) >= start - timedelta(minutes=LOCK_MINUTES)
 
 
+# ---------- Salud / diagnóstico ----------
+@app.get("/api/health")
+def health():
+    """Estado de la app y conteos reales en Supabase. Permite verificar en
+    cualquier momento que los datos de cada usuario están persistidos."""
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            players = cur.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"]
+            preds = cur.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()["n"]
+            matches = cur.execute("SELECT COUNT(*) AS n FROM matches").fetchone()["n"]
+            finished = cur.execute(
+                "SELECT COUNT(*) AS n FROM matches "
+                "WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL"
+            ).fetchone()["n"]
+        return {
+            "db": "ok",
+            "players": players,
+            "predictions": preds,
+            "matches": matches,
+            "finished": finished,
+            "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"BD no disponible: {e}")
+
+
 # ---------- Endpoints: jugadores / auth ----------
 @app.post("/api/players")
 def create_player(player: PlayerCreate):
@@ -234,31 +273,27 @@ def create_player(player: PlayerCreate):
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
     if not (pin.isdigit() and len(pin) == 4):
         raise HTTPException(status_code=400, detail="El PIN debe tener 4 dígitos")
-    conn = get_conn()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "INSERT INTO players (name, pin) VALUES (%s, %s) RETURNING id",
-            (name, hash_pin(pin)),
-        )
-        new_id = cursor.fetchone()["id"]
-        conn.commit()
-        return {"id": new_id, "name": name}
-    except psycopg.errors.UniqueViolation:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail="Ese nombre ya está registrado")
-    finally:
-        conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO players (name, pin) VALUES (%s, %s) RETURNING id",
+                (name, hash_pin(pin)),
+            )
+            new_id = cursor.fetchone()["id"]
+            conn.commit()
+            return {"id": new_id, "name": name}
+        except psycopg.errors.UniqueViolation:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail="Ese nombre ya está registrado")
 
 
 @app.post("/api/login")
 def login(req: LoginRequest):
-    conn = get_conn()
-    cursor = conn.cursor()
-    p = cursor.execute(
-        "SELECT * FROM players WHERE name = %s", (req.name.strip(),)
-    ).fetchone()
-    conn.close()
+    with db_conn() as conn:
+        p = conn.execute(
+            "SELECT * FROM players WHERE name = %s", (req.name.strip(),)
+        ).fetchone()
     if not p or p["pin"] != hash_pin(req.pin.strip()):
         raise HTTPException(status_code=401, detail="Nombre o PIN incorrecto")
     return {"id": p["id"], "name": p["name"], "points": p["points"]}
@@ -266,16 +301,15 @@ def login(req: LoginRequest):
 
 @app.get("/api/players")
 def get_players():
-    conn = get_conn()
-    cursor = conn.cursor()
-    rows = cursor.execute(
-        "SELECT p.id, p.name, p.points, p.exact_hits, p.partial_hits, "
-        "  (SELECT COUNT(*) FROM predictions pr WHERE pr.player_id = p.id) AS pred_count "
-        "FROM players p "
-        "ORDER BY p.points DESC, p.exact_hits DESC, p.name ASC"
-    ).fetchall()
-    total, _currency = asado_config(cursor)
-    conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        rows = cursor.execute(
+            "SELECT p.id, p.name, p.points, p.exact_hits, p.partial_hits, "
+            "  (SELECT COUNT(*) FROM predictions pr WHERE pr.player_id = p.id) AS pred_count "
+            "FROM players p "
+            "ORDER BY p.points DESC, p.exact_hits DESC, p.name ASC"
+        ).fetchall()
+        total, _currency = asado_config(cursor)
 
     players = [dict(p) for p in rows]
     # Reparto del asado: el 1º no paga; el resto divide el total en partes iguales.
@@ -290,10 +324,8 @@ def get_players():
 @app.get("/api/settings")
 def get_settings():
     """Configuración pública del premio (monto del asado y moneda)."""
-    conn = get_conn()
-    cursor = conn.cursor()
-    total, currency = asado_config(cursor)
-    conn.close()
+    with db_conn() as conn:
+        total, currency = asado_config(conn.cursor())
     return {"asado_total": total, "currency": currency}
 
 
@@ -303,12 +335,11 @@ def update_settings(body: SettingsUpdate):
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
     if body.asado_total < 0:
         raise HTTPException(status_code=400, detail="El monto no puede ser negativo")
-    conn = get_conn()
-    cursor = conn.cursor()
-    set_setting(cursor, "asado_total", body.asado_total)
-    set_setting(cursor, "asado_currency", (body.currency or "$").strip()[:4])
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        set_setting(cursor, "asado_total", body.asado_total)
+        set_setting(cursor, "asado_currency", (body.currency or "$").strip()[:4])
+        conn.commit()
     return {"status": "ok"}
 
 
@@ -316,12 +347,11 @@ def update_settings(body: SettingsUpdate):
 def delete_player(player_id: int, body: dict):
     if body.get("admin_key") != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
-    conn = get_conn()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM predictions WHERE player_id = %s", (player_id,))
-    cursor.execute("DELETE FROM players WHERE id = %s", (player_id,))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM predictions WHERE player_id = %s", (player_id,))
+        cursor.execute("DELETE FROM players WHERE id = %s", (player_id,))
+        conn.commit()
     return {"status": "ok"}
 
 
@@ -330,19 +360,18 @@ def cleanup_inactive(body: dict):
     """Elimina jugadores que se registraron pero no cargaron ningún pronóstico."""
     if body.get("admin_key") != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
-    conn = get_conn()
-    cursor = conn.cursor()
-    rows = cursor.execute(
-        "SELECT name FROM players WHERE id NOT IN "
-        "(SELECT DISTINCT player_id FROM predictions)"
-    ).fetchall()
-    names = [r["name"] for r in rows]
-    cursor.execute(
-        "DELETE FROM players WHERE id NOT IN "
-        "(SELECT DISTINCT player_id FROM predictions)"
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        rows = cursor.execute(
+            "SELECT name FROM players WHERE id NOT IN "
+            "(SELECT DISTINCT player_id FROM predictions)"
+        ).fetchall()
+        names = [r["name"] for r in rows]
+        cursor.execute(
+            "DELETE FROM players WHERE id NOT IN "
+            "(SELECT DISTINCT player_id FROM predictions)"
+        )
+        conn.commit()
     return {"deleted": len(names), "names": names}
 
 
@@ -350,13 +379,12 @@ def cleanup_inactive(body: dict):
 def player_board(player_id: int):
     """Pronósticos de un jugador, SOLO de partidos ya cerrados (anti-trampa).
     Los partidos aún abiertos no revelan la jugada de otros."""
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT pr.match_id, pr.home_score, pr.away_score, m.date "
-        "FROM predictions pr JOIN matches m ON m.id = pr.match_id "
-        "WHERE pr.player_id = %s", (player_id,)
-    ).fetchall()
-    conn.close()
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT pr.match_id, pr.home_score, pr.away_score, m.date "
+            "FROM predictions pr JOIN matches m ON m.id = pr.match_id "
+            "WHERE pr.player_id = %s", (player_id,)
+        ).fetchall()
     return [
         {"match_id": r["match_id"], "home_score": r["home_score"], "away_score": r["away_score"]}
         for r in rows if is_locked(r["date"])
@@ -374,9 +402,8 @@ def verify_pin(cursor, player_id: int, pin: str):
 
 @app.post("/api/predictions")
 def save_prediction(pred: PredictionUpdate):
-    conn = get_conn()
-    cursor = conn.cursor()
-    try:
+    with db_conn() as conn:
+        cursor = conn.cursor()
         verify_pin(cursor, pred.player_id, pred.pin)
         match = cursor.execute(
             "SELECT date FROM matches WHERE id = %s", (pred.match_id,)
@@ -397,26 +424,22 @@ def save_prediction(pred: PredictionUpdate):
         )
         conn.commit()
         return {"status": "ok"}
-    finally:
-        conn.close()
 
 
 @app.get("/api/predictions/{player_id}")
 def get_player_predictions(player_id: int):
-    conn = get_conn()
-    preds = conn.execute(
-        "SELECT * FROM predictions WHERE player_id = %s", (player_id,)
-    ).fetchall()
-    conn.close()
+    with db_conn() as conn:
+        preds = conn.execute(
+            "SELECT * FROM predictions WHERE player_id = %s", (player_id,)
+        ).fetchall()
     return [dict(p) for p in preds]
 
 
 # ---------- Endpoints: partidos / resultados ----------
 @app.get("/api/matches")
 def get_matches():
-    conn = get_conn()
-    matches = conn.execute("SELECT * FROM matches ORDER BY date").fetchall()
-    conn.close()
+    with db_conn() as conn:
+        matches = conn.execute("SELECT * FROM matches ORDER BY date").fetchall()
     out = []
     for m in matches:
         d = dict(m)
@@ -464,18 +487,16 @@ def get_stadiums():
 def set_result(match_id: str, body: ResultUpdate):
     if body.admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Clave de administrador incorrecta")
-    conn = get_conn()
-    cursor = conn.cursor()
-    m = cursor.execute("SELECT id FROM matches WHERE id = %s", (match_id,)).fetchone()
-    if not m:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Partido no encontrado")
-    cursor.execute(
-        "UPDATE matches SET home_goals = %s, away_goals = %s, status = 'FT' WHERE id = %s",
-        (body.home_goals, body.away_goals, match_id),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cursor = conn.cursor()
+        m = cursor.execute("SELECT id FROM matches WHERE id = %s", (match_id,)).fetchone()
+        if not m:
+            raise HTTPException(status_code=404, detail="Partido no encontrado")
+        cursor.execute(
+            "UPDATE matches SET home_goals = %s, away_goals = %s, status = 'FT' WHERE id = %s",
+            (body.home_goals, body.away_goals, match_id),
+        )
+        conn.commit()
     recalculate_scores()
     return {"status": "ok"}
 
@@ -501,6 +522,7 @@ if os.path.exists("web"):
 
 # ---------- Sincronización automática de resultados ----------
 SYNC_INTERVAL_MINUTES = 15
+_sync_started = False
 
 
 def start_auto_sync():
@@ -508,9 +530,13 @@ def start_auto_sync():
     15 minutos en un hilo de fondo (sin clave). Cubre los 104 partidos (grupos +
     eliminatoria). Desactivable con AUTO_SYNC=0; el panel de administración de la
     web sigue disponible para correcciones manuales."""
+    global _sync_started
+    if _sync_started:
+        return
     if os.environ.get("AUTO_SYNC", "1") == "0":
         print("Auto-sync desactivado (AUTO_SYNC=0); usa el panel admin.")
         return
+    _sync_started = True
     import threading
 
     def loop():
@@ -530,9 +556,8 @@ def start_auto_sync():
 
 
 if __name__ == "__main__":
-    init_db()
-    start_auto_sync()
     port = int(os.environ.get("PORT", "8000"))
     print(f"Iniciando servidor en http://localhost:{port}")
     print(f"Web: http://localhost:{port}/static/index.html")
+    # init_db() y start_auto_sync() se ejecutan en el lifespan de la app.
     uvicorn.run(app, host="0.0.0.0", port=port)
