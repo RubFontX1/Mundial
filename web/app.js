@@ -181,7 +181,7 @@ async function refreshData(rerender = true) {
             const me = pl.find(p => p.id == state.currentPlayer.id);
             if (me) state.currentPlayer = me;
         }
-        if (rerender) { renderSession(); renderTicker(); switchView(state.view); }
+        if (rerender) { renderSession(); renderTicker(); switchView(state.view, true); }
         else { renderTicker(); }
     } catch (e) { /* reintenta al próximo ciclo */ }
     finally { _refreshing = false; }
@@ -191,17 +191,26 @@ let _refreshTimer = null;
 function startAutoRefresh() {
     if (_refreshTimer) return;
     _refreshTimer = setInterval(() => {
-        if (document.visibilityState === 'visible') refreshData(true);
-    }, 45000);
+        if (document.visibilityState === 'visible') {
+            // Check if we shouldn't rerender because the user might be typing
+            const hasFocus = document.activeElement &&
+                           (document.activeElement.tagName === 'INPUT' ||
+                            document.activeElement.tagName === 'TEXTAREA');
+            const preventRerender = hasFocus || (!state.currentPlayer && state.view === 'mis') || (!state.adminKey && state.view === 'admin');
+            refreshData(!preventRerender);
+        }
+    }, 15000);
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') refreshData(true);
+        if (document.visibilityState === 'visible') {
+            refreshData(true);
+        }
     });
 }
 
 /* ============================================================
    NAVEGACIÓN
    ============================================================ */
-function switchView(view) {
+function switchView(view, preserveScroll = false) {
     if (_countdownTimer) { clearInterval(_countdownTimer); _countdownTimer = null; }
     state.view = view;
     if (view !== 'ranking') state.detailId = null;
@@ -215,7 +224,9 @@ function switchView(view) {
     else if (view === 'ranking') renderRanking();
     else if (view === 'mis') renderMis();
     else if (view === 'admin') renderAdmin();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!preserveScroll) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 }
 
 /* ---------- Sesión y ticker ---------- */

@@ -521,7 +521,7 @@ if os.path.exists("web"):
 
 
 # ---------- Sincronización automática de resultados ----------
-SYNC_INTERVAL_MINUTES = 15
+SYNC_INTERVAL_MINUTES = 1
 _sync_started = False
 
 
